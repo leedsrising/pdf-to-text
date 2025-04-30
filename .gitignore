@@ -1,3 +1,8 @@
-confidential_data/*
-*.pdf
+venv/
 .env
+confidential_data/*
+text_output/
+sanitized_output/
+
+# just in case :)
+*.pdf
