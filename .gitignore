@@ -1,8 +1,9 @@
 venv/
 .env
 confidential_data/*
-text_output/
-sanitized_output/
+text_output/*
+sanitized_output/*
+text_output_sanitized/*
 
 # just in case :)
 *.pdf
