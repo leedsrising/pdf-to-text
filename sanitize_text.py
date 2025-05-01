@@ -21,85 +21,64 @@ def load_models():
     return nlp, embedding_model
 
 class EntityDetector:
-    def __init__(self, embedding_model):
+    def __init__(self, embedding_model, allowed_entities=None):
         self.model = embedding_model
+        self.allowed_entities = set(allowed_entities or ["Mavik"])  # Default to only Mavik
         
-        # Create embeddings for entity-like concepts
-        self.entity_concepts = [
-            "business name",
-            "company name",
-            "organization name",
-            "real estate property",
-            "investment firm",
-            "development project",
-            "financial institution",
-            "property manager",
-            "real estate fund",
-            "market location",
-            "business entity"
-        ]
-        self.entity_embeddings = self.model.encode(self.entity_concepts)
-    
-    def is_likely_entity(self, text: str, context: str = "") -> Tuple[bool, float]:
-        # Combine text with context if available
-        text_to_analyze = f"{context} {text}" if context else text
-        
-        # Get embedding for the text
-        text_embedding = self.model.encode([text_to_analyze])[0]
-        
-        # Calculate similarity with entity concepts
-        similarities = np.dot(self.entity_embeddings, text_embedding) / (
-            np.linalg.norm(self.entity_embeddings, axis=1) * np.linalg.norm(text_embedding)
-        )
-        
-        max_similarity = np.max(similarities)
-        
-        # Consider additional structural features
-        structural_indicators = [
-            text[0].isupper(),  # Starts with capital letter
-            any(word[0].isupper() for word in text.split()),  # Contains capitalized words
-            bool(re.search(r'\b(?:LLC|LP|Inc|Corp|Partners|Group)\b', text)),  # Common business suffixes
-            len(text.split()) >= 2  # Multiple words
+    def is_entity_mention(self, text: str) -> bool:
+        """More aggressive entity detection"""
+        # Check if it's an allowed entity first
+        if any(allowed.lower() == text.lower() for allowed in self.allowed_entities):
+            return False
+            
+        # Consider it an entity if:
+        conditions = [
+            text[0].isupper(),  # Starts with capital
+            len(text.split()) > 1 and all(word[0].isupper() for word in text.split()),  # All words capitalized
+            bool(re.search(r'\b(?:LLC|LP|Inc|Corp|Fund|Capital|Partners|Group|Market|Properties)\b', text)),  # Business terms
+            bool(re.search(r'[A-Z]{2,}', text)),  # Acronyms
+            bool(re.search(r'\b(?:North|South|East|West|New|Old)\s+[A-Z]', text)),  # Directional names
+            any(char.isupper() for char in text[1:])  # Contains capitals after first char
         ]
         
-        structural_score = sum(structural_indicators) / len(structural_indicators)
-        
-        # Combine semantic and structural scores
-        combined_score = 0.7 * max_similarity + 0.3 * structural_score
-        
-        return combined_score > 0.6, combined_score
+        # More aggressive: consider it an entity if any condition is met
+        return any(conditions)
 
 def sanitize_text(text: str, nlp, entity_detector: EntityDetector) -> str:
     doc = nlp(text)
     sanitized = text
     spans_to_replace = []
 
-    # First pass: Process named entities from spaCy
+    # First pass: Process multi-token spans
+    for sent in doc.sents:
+        for i in range(len(sent)):
+            for j in range(i + 1, len(sent) + 1):
+                span = sent[i:j]
+                if len(span.text.split()) > 1:  # Multi-token span
+                    if entity_detector.is_entity_mention(span.text):
+                        spans_to_replace.append((span.start_char, span.end_char, '[ENTITY]'))
+
+    # Second pass: Individual tokens and named entities
     for ent in doc.ents:
-        if ent.label_ in ['PERSON', 'ORG', 'GPE', 'FAC', 'LOC']:
-            spans_to_replace.append((ent.start_char, ent.end_char, '[ENTITY]'))
+        if ent.label_ in ['PERSON', 'ORG', 'GPE', 'FAC', 'LOC', 'PRODUCT', 'EVENT']:
+            text_to_check = ent.text.strip()
+            if not any(allowed.lower() == text_to_check.lower() 
+                      for allowed in entity_detector.allowed_entities):
+                spans_to_replace.append((ent.start_char, ent.end_char, '[ENTITY]'))
         elif ent.label_ in ['MONEY', 'CARDINAL', 'QUANTITY', 'PERCENT']:
             spans_to_replace.append((ent.start_char, ent.end_char, '[NUMBER]'))
         elif ent.label_ in ['DATE', 'TIME']:
             spans_to_replace.append((ent.start_char, ent.end_char, '[DATE]'))
 
-    # Second pass: Use embedding-based entity detection on noun chunks
-    for chunk in doc.noun_chunks:
-        # Skip if already part of a named entity
-        if any(chunk.start_char >= span[0] and chunk.end_char <= span[1] 
-               for span in spans_to_replace):
-            continue
-        
-        # Get context (surrounding text)
-        context_start = max(0, chunk.start_char - 50)
-        context_end = min(len(text), chunk.end_char + 50)
-        context = text[context_start:context_end]
-        
-        is_entity, confidence = entity_detector.is_likely_entity(chunk.text, context)
-        if is_entity:
-            spans_to_replace.append((chunk.start_char, chunk.end_char, '[ENTITY]'))
+    # Third pass: Check individual tokens
+    for token in doc:
+        if entity_detector.is_entity_mention(token.text):
+            # Skip if already part of a larger span
+            if not any(span[0] <= token.idx and token.idx + len(token.text) <= span[1] 
+                      for span in spans_to_replace):
+                spans_to_replace.append((token.idx, token.idx + len(token.text), '[ENTITY]'))
 
-    # Additional patterns for specific information types
+    # Additional patterns for specific information
     patterns = [
         (r'\b[\w\.-]+@[\w\.-]+\.\w+\b', '[EMAIL]'),
         (r'\+?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', '[PHONE]'),
@@ -127,7 +106,7 @@ def sanitize_text(text: str, nlp, entity_detector: EntityDetector) -> str:
 def process_files():
     print("Loading models...")
     nlp, embedding_model = load_models()
-    entity_detector = EntityDetector(embedding_model)
+    entity_detector = EntityDetector(embedding_model, allowed_entities=["Mavik"])
     
     input_dir = Path('text_output')
     output_dir = Path('text_output_sanitized')
