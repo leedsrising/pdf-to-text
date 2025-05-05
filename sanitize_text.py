@@ -26,80 +26,88 @@ class EntityDetector:
         self.allowed_entities = set(allowed_entities or ["Mavik"])  # Default to only Mavik
         
     def is_entity_mention(self, text: str) -> bool:
-        """More aggressive entity detection"""
-        # Check if it's an allowed entity first
         if any(allowed.lower() == text.lower() for allowed in self.allowed_entities):
             return False
-            
-        # Consider it an entity if:
-        conditions = [
-            text[0].isupper(),  # Starts with capital
-            len(text.split()) > 1 and all(word[0].isupper() for word in text.split()),  # All words capitalized
-            bool(re.search(r'\b(?:LLC|LP|Inc|Corp|Fund|Capital|Partners|Group|Market|Properties)\b', text)),  # Business terms
-            bool(re.search(r'[A-Z]{2,}', text)),  # Acronyms
-            bool(re.search(r'\b(?:North|South|East|West|New|Old)\s+[A-Z]', text)),  # Directional names
-            any(char.isupper() for char in text[1:])  # Contains capitals after first char
-        ]
-        
-        # More aggressive: consider it an entity if any condition is met
-        return any(conditions)
+        # Looser rules:
+        # 1. Any word with an ampersand, hyphen, or period
+        if re.search(r'[&\-.]', text):
+            return True
+        # 2. All uppercase or mostly uppercase (including with special chars)
+        if len(text) > 1 and sum(1 for c in text if c.isupper()) / len(text) > 0.5:
+            return True
+        # 3. Any word with a mix of uppercase and lowercase (e.g., "Geneva")
+        if any(c.isupper() for c in text) and any(c.islower() for c in text):
+            return True
+        # 4. Any capitalized word not at the start of a sentence
+        if text and text[0].isupper() and text[1:].islower():
+            return True
+        # 5. Any word with a digit
+        if re.search(r'\d', text):
+            return True
+        # 6. Multi-word phrase with all words capitalized
+        if len(text.split()) > 1 and all(w and w[0].isupper() for w in text.split()):
+            return True
+        return False
 
-def sanitize_text(text: str, nlp, entity_detector: EntityDetector) -> str:
+def get_ngrams(doc, min_n=1, max_n=4):
+    ngrams = []
+    for n in range(min_n, max_n+1):
+        for i in range(len(doc) - n + 1):
+            span = doc[i:i+n]
+            ngrams.append((span.start_char, span.end_char, span.text))
+    return ngrams
+
+def sanitize_text(text, nlp, entity_detector):
     doc = nlp(text)
     sanitized = text
     spans_to_replace = []
 
-    # First pass: Process multi-token spans
-    for sent in doc.sents:
-        for i in range(len(sent)):
-            for j in range(i + 1, len(sent) + 1):
-                span = sent[i:j]
-                if len(span.text.split()) > 1:  # Multi-token span
-                    if entity_detector.is_entity_mention(span.text):
-                        spans_to_replace.append((span.start_char, span.end_char, '[ENTITY]'))
+    print(f"Document length: {len(text)}")
 
-    # Second pass: Individual tokens and named entities
+    # NER-based replacements (as before)
     for ent in doc.ents:
-        if ent.label_ in ['PERSON', 'ORG', 'GPE', 'FAC', 'LOC', 'PRODUCT', 'EVENT']:
-            text_to_check = ent.text.strip()
-            if not any(allowed.lower() == text_to_check.lower() 
-                      for allowed in entity_detector.allowed_entities):
+        if ent.label_ in ['PERSON', 'ORG', 'GPE', 'FAC', 'LOC', 'PRODUCT', 'EVENT', 'WORK_OF_ART', 'LAW', 'LANGUAGE', 'NORP']:
+            if ent.text.strip().lower() != "mavik":
+                print(f"NER: '{ent.text}' ({ent.start_char}-{ent.end_char}) [{ent.label_}]")
                 spans_to_replace.append((ent.start_char, ent.end_char, '[ENTITY]'))
         elif ent.label_ in ['MONEY', 'CARDINAL', 'QUANTITY', 'PERCENT']:
+            print(f"NER: '{ent.text}' ({ent.start_char}-{ent.end_char}) [{ent.label_}]")
             spans_to_replace.append((ent.start_char, ent.end_char, '[NUMBER]'))
         elif ent.label_ in ['DATE', 'TIME']:
+            print(f"NER: '{ent.text}' ({ent.start_char}-{ent.end_char}) [{ent.label_}]")
             spans_to_replace.append((ent.start_char, ent.end_char, '[DATE]'))
 
-    # Third pass: Check individual tokens
-    for token in doc:
-        if entity_detector.is_entity_mention(token.text):
-            # Skip if already part of a larger span
-            if not any(span[0] <= token.idx and token.idx + len(token.text) <= span[1] 
-                      for span in spans_to_replace):
-                spans_to_replace.append((token.idx, token.idx + len(token.text), '[ENTITY]'))
+    # N-gram based entity detection (looser, more robust)
+    ngram_spans = get_ngrams(doc, 1, 4)
+    for start, end, ngram_text in ngram_spans:
+        if ngram_text.strip().lower() != "mavik" and entity_detector.is_entity_mention(ngram_text):
+            print(f"N-gram: '{ngram_text}' ({start}-{end})")
+            spans_to_replace.append((start, end, '[ENTITY]'))
 
-    # Additional patterns for specific information
-    patterns = [
-        (r'\b[\w\.-]+@[\w\.-]+\.\w+\b', '[EMAIL]'),
-        (r'\+?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', '[PHONE]'),
-        (r'\$\s*\d+(?:,\d{3})*(?:\.\d{2})?(?:\s*(?:million|billion|trillion))?', '[AMOUNT]'),
-        (r'\d+(?:\.\d+)?%', '[PERCENTAGE]'),
-        (r'\b\d+(?:,\d{3})*(?:\.\d+)?\s*(?:sq\.?\s*ft\.?|SF|square\s*feet)\b', '[AREA]'),
-        (r'\b\d+(?:,\d{3})*(?:\.\d+)?\s*(?:acres?)\b', '[AREA]'),
-        (r'\b(?:Suite|Ste|Unit|Apt|Building|Bldg|Floor|Fl)\s*#?\s*[A-Za-z0-9-]+\b', '[UNIT]'),
-        (r'\b\d+\s+[A-Za-z0-9\s,]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b', '[ADDRESS]'),
-    ]
-    
-    for pattern, replacement in patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            spans_to_replace.append((match.start(), match.end(), replacement))
+    # Log all spans before filtering
+    print("All spans to replace (before filtering):")
+    for start, end, label in spans_to_replace:
+        print(f"  Span: {start}-{end}, Label: {label}, Text: '{text[start:end]}'")
 
-    # Sort spans in reverse order to preserve indices during replacement
-    spans_to_replace.sort(key=lambda x: x[0], reverse=True)
-    
-    # Apply replacements
-    for start, end, replacement in spans_to_replace:
-        sanitized = sanitized[:start] + replacement + sanitized[end:]
+    # Remove overlapping spans (keep the largest)
+    spans_to_replace = sorted(spans_to_replace, key=lambda x: (x[0], -x[1]))
+    non_overlapping = []
+    last_end = -1
+    for start, end, label in spans_to_replace:
+        if start >= last_end:
+            non_overlapping.append((start, end, label))
+            last_end = end
+
+    print("Non-overlapping spans to replace:")
+    for start, end, label in non_overlapping:
+        print(f"  Span: {start}-{end}, Label: {label}, Text: '{text[start:end]}'")
+
+    # Replace from the end to avoid messing up indices
+    for start, end, label in reversed(non_overlapping):
+        sanitized = sanitized[:start] + label + sanitized[end:]
+
+    # Final step: remove all remaining digits
+    sanitized = re.sub(r'[0-9]', '', sanitized)
 
     return sanitized
 
