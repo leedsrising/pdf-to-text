@@ -7,3 +7,5 @@ text_output_sanitized/*
 
 # just in case :)
 *.pdf
+
+text_output_rehydrated/*
