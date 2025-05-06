@@ -1,0 +1,13 @@
+How to format a .md file for the instructions folder
+
+## Overview
+A brief, high-level summary of the purpose and scope of this instructions document, explaining what it covers.
+
+## Goals
+A concise list of key objectives and success criteria that this documentation aims to achieve, outlining the desired outcomes.
+
+## Core Requirements
+A detailed enumeration of essential features, constraints, and acceptance conditions that must be met for a successful implementation.
+
+## Reference Files
+A list of relevant file paths or components referenced by these instructions, each accompanied by a short description of its role.
