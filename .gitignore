@@ -9,3 +9,6 @@ text_output_sanitized/*
 *.pdf
 
 text_output_rehydrated/*
+
+__pycache__/*
+outputs/*
